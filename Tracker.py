@@ -8,6 +8,7 @@ class Tracker:
     def track(self, detections, frame):
         tracking_ids = []
         boxes = []
+        class_labels = [] 
         tracks = self.object_tracker.update_tracks(detections, frame=frame)
 
         for track in tracks:
@@ -16,5 +17,6 @@ class Tracker:
             tracking_ids.append(track.track_id)
             ltrb = track.to_ltrb()
             boxes.append(ltrb)
+            class_labels.append(track.det_class)
             
-        return tracking_ids, boxes
+        return tracking_ids, boxes, class_labels

@@ -26,7 +26,8 @@ class YoloModel:
                 continue
             conf = box.conf[0]
             # Append in correct format
-            detections.append((([x1, y1, w, h]), conf, class_num))
+            cls_label = result.names[class_num]
+            detections.append((([x1, y1, w, h]), conf, cls_label ))
 
         return detections
-
+    
