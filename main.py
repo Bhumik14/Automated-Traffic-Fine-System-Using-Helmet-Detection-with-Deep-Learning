@@ -5,6 +5,8 @@ from YoloModel import YoloModel
 from Tracker import Tracker
 import os
 from iou import iou
+from np_extraction import ocr
+import json
 
 MODEL_PATH = './models/best.pt'
 VIDEO_PATH = './assets/test4.mp4'
@@ -101,45 +103,66 @@ def main():
         violations = []
         for tid, info in track_info.items():
             if info["rider"] and info["no_helmet"]:
+                plate_text = ""
+                np_box = info["number_plate_bbox"]
+                if np_box is not None and isinstance(np_box, (list, tuple)) and len(np_box) == 4:
+                    plate_text = ocr(frame, np_box)
                 violations.append({
                     "track_id": tid,
                     "rider_bbox": info["rider_bbox"],
                     "number_plate_bbox": info["number_plate_bbox"],
+                    "plate_text": plate_text,
                     "frame_time": cap.get(cv2.CAP_PROP_POS_MSEC)
                 })
+                cv2.putText(frame, f"{plate_text}", (x1, y1 - 10),cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+
+
+
         
         with open("output_log.txt", "a") as f:
-            f.write(f"Voilation: {violations}")
+            for violation in violations:
+                f.write(json.dumps(violation) + "\n")
 
-        # os.makedirs("violations/riders", exist_ok=True)
-        # os.makedirs("violations/plates", exist_ok=True)
+        os.makedirs("violations/riders", exist_ok=True)
+        os.makedirs("violations/plates", exist_ok=True)
 
-        # frame_count = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+        frame_count = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
 
-        # for v in violations:
-        #     rbox = list(map(int, v["rider_bbox"]))  # convert floats to ints
-        #     rider_crop = frame[rbox[1]:rbox[3], rbox[0]:rbox[2]]
+        for v in violations:
+            rbox = list(map(int, v["rider_bbox"]))  # convert floats to ints
+            rider_crop = frame[rbox[1]:rbox[3], rbox[0]:rbox[2]]
 
-        #     rider_path = f"violations/riders/rider_{v['track_id']}_frame_{frame_count}.png"
-        #     cv2.imwrite(rider_path, rider_crop)
+            rider_path = f"violations/riders/rider_{v['track_id']}_frame_{frame_count}.png"
+            cv2.imwrite(rider_path, rider_crop)
 
-        #     if v["number_plate_bbox"] is not None:
-        #         pbox = list(map(int, v["number_plate_bbox"]))
-        #         plate_crop = frame[pbox[1]:pbox[3], pbox[0]:pbox[2]]
-        #         plate_path = f"violations/plates/plate_{v['track_id']}_frame_{frame_count}.png"
-        #         cv2.imwrite(plate_path, plate_crop)
-        #     else:
+            if v["number_plate_bbox"] is not None:
+                pbox = list(map(int, v["number_plate_bbox"]))
+                plate_crop = frame[pbox[1]:pbox[3], pbox[0]:pbox[2]]
+                # Preprocessing
+                gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
+                filtered = cv2.bilateralFilter(gray, 11, 17, 17)
+                _, thresh = cv2.threshold(filtered, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+                # Optional morphology
+                # kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+                # morphed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+
+
+                plate_path = f"violations/plates/plate_{v['track_id']}_frame_{frame_count}.png"
+                cv2.imwrite(plate_path, thresh)
+            else:
     
-        #         plate_path = None
+                plate_path = None
 
-        #     # You can save metadata to a JSON or database as needed here
-        #     violation_record = {
-        #         "track_id": v["track_id"],
-        #         "frame_time": v["frame_time"],
-        #         "rider_img_path": rider_path,
-        #         "plate_img_path": plate_path
-        #     }
-        #     print("Violation recorded:", violation_record)
+            # You can save metadata to a JSON or database as needed here
+            violation_record = {
+                "track_id": v["track_id"],
+                "frame_time": v["frame_time"],
+                "rider_img_path": rider_path,
+                "plate_img_path": plate_path
+            }
+            print("Violation recorded:", violation_record)
 
         # Optionally save violation_record to persistent storage
         print("Violations", violations)

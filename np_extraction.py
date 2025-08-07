@@ -2,9 +2,10 @@ import easyocr
 import json
 reader = easyocr.Reader(['en'])
 
-def crop_image(img, bbox):
-    x1, y1, x2, y2 = bbox
-    return img[y1:y2, x1:x2]
+def crop_image(frame, pbox):
+    plate_crop = frame[pbox[1]:pbox[3], pbox[0]:pbox[2]]
+    
+    return plate_crop
 
 def ocr(img, bbox):
     crop_img = crop_image(img, bbox)
