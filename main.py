@@ -5,18 +5,37 @@ from YoloModel import YoloModel
 from Tracker import Tracker
 import os
 from iou import iou
-from np_extraction import ocr
 import json
+from google import genai
+from PIL import Image
+from notify import send_notification
 
 MODEL_PATH = './models/best.pt'
-VIDEO_PATH = './assets/test4.mp4'
+VIDEO_PATH = './assets/test2.mp4'
+
+# Initialize Gemini client once
+client = genai.Client(api_key="AIzaSyBuGk3kE8zdnFyhFwn8h8iEWF8YTXFUapA")
+
+def extract_plate_text_with_gemini(image_path: str):
+    """Send one number plate image to Gemini and return extracted text."""
+    try:
+        img = Image.open(image_path)
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",   # use a multimodal model
+            contents=[
+                img,
+                "Extract the license plate number from this image. Return strictly the plate text. Do not include spaces, symbols, or additional text."
+            ],
+        )
+        return response.text.strip()
+    except Exception as e:
+        print("Gemini OCR failed:", e)
+        return ""
 
 def main():
-    # Load YOLO model and tracker
     model = YoloModel(model_path=MODEL_PATH)
     tracker = Tracker()
 
-    # Open input video
     cap = cv2.VideoCapture(VIDEO_PATH)
     if not cap.isOpened():
         print(f"Error: Could not open video {VIDEO_PATH}")
@@ -26,28 +45,26 @@ def main():
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     frame_fps = cap.get(cv2.CAP_PROP_FPS)
 
-    # Prepare output video writer
     output_video_path = 'output_tracked.mp4'
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_video_path, fourcc, frame_fps, (frame_width, frame_height))
 
-    # Process each frame
+    os.makedirs("violations/riders", exist_ok=True)
+    os.makedirs("violations/plates", exist_ok=True)
+
+    best_plate = {"area": 0, "path": None}  # store best crop for Gemini
+
     while cap.isOpened():
         success, frame = cap.read()
         if not success:
             break
 
-        detections = model.detect(frame)
-        detections = detections if detections is not None else []
-
-
+        detections = model.detect(frame) or []
         tracking_ids, boxes, cls_labels = tracker.track(detections, frame)
 
-        # --- After you obtain tracking_ids, boxes, cls_labels ---
         track_info = {}
         rider_boxes = {}
 
-        # First, process riders and build the mapping
         for tracking_id, bounding_box, cls_label in zip(tracking_ids, boxes, cls_labels):
             bounding_box = list(map(int, bounding_box))
             if cls_label == "rider":
@@ -65,24 +82,20 @@ def main():
         
             x1, y1, x2, y2 = map(int, bounding_box)
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(frame, f"{tracking_id}", (x1, y1 - 10),cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            cv2.putText(frame, f"{tracking_id}", (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-
-
-        # Associate helmets, no_helmet, and number_plate to the closest rider by IoU
+        # Associate helmet/no_helmet/number_plate
         for obj_tracking_id, obj_box, obj_label in zip(tracking_ids, boxes, cls_labels):
             obj_box = list(map(int, obj_box))
-
-        
             if obj_label not in ["helmet", "no_helmet", "number_plate"]:
                 continue
 
-            # Find best rider match by IoU
             best_iou = 0
             best_rider_id = None
             for rider_id, rider_box in rider_boxes.items():
                 overlap = iou(obj_box, rider_box)
-                if overlap > best_iou and overlap > 0.01:  # Lower threshold for loose associations
+                if overlap > best_iou and overlap > 0.01:
                     best_iou = overlap
                     best_rider_id = rider_id
 
@@ -97,81 +110,57 @@ def main():
                     track_info[best_rider_id]["number_plate"] = True
                     track_info[best_rider_id]["number_plate_bbox"] = obj_box
 
-            
-
-
         violations = []
-        for tid, info in track_info.items():
-            if info["rider"] and info["no_helmet"]:
-                plate_text = ""
-                np_box = info["number_plate_bbox"]
-                if np_box is not None and isinstance(np_box, (list, tuple)) and len(np_box) == 4:
-                    plate_text = ocr(frame, np_box)
-                violations.append({
-                    "track_id": tid,
-                    "rider_bbox": info["rider_bbox"],
-                    "number_plate_bbox": info["number_plate_bbox"],
-                    "plate_text": plate_text,
-                    "frame_time": cap.get(cv2.CAP_PROP_POS_MSEC)
-                })
-                cv2.putText(frame, f"{plate_text}", (x1, y1 - 10),cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-
-
-
-
-        
-        with open("output_log.txt", "a") as f:
-            for violation in violations:
-                f.write(json.dumps(violation) + "\n")
-
-        os.makedirs("violations/riders", exist_ok=True)
-        os.makedirs("violations/plates", exist_ok=True)
-
         frame_count = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
 
-        for v in violations:
-            rbox = list(map(int, v["rider_bbox"]))  # convert floats to ints
-            rider_crop = frame[rbox[1]:rbox[3], rbox[0]:rbox[2]]
-
-            rider_path = f"violations/riders/rider_{v['track_id']}_frame_{frame_count}.png"
-            cv2.imwrite(rider_path, rider_crop)
-
-            if v["number_plate_bbox"] is not None:
-                pbox = list(map(int, v["number_plate_bbox"]))
-                plate_crop = frame[pbox[1]:pbox[3], pbox[0]:pbox[2]]
-                # Preprocessing
-                gray = cv2.cvtColor(plate_crop, cv2.COLOR_BGR2GRAY)
-                filtered = cv2.bilateralFilter(gray, 11, 17, 17)
-                _, thresh = cv2.threshold(filtered, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-                # Optional morphology
-                # kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                # morphed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-
-
-                plate_path = f"violations/plates/plate_{v['track_id']}_frame_{frame_count}.png"
-                cv2.imwrite(plate_path, thresh)
-            else:
-    
+        for tid, info in track_info.items():
+            if info["rider"] and info["no_helmet"]:
+                np_box = info["number_plate_bbox"]
                 plate_path = None
+                if np_box is not None:
+                    x1, y1, x2, y2 = map(int, np_box)
+                    plate_crop = frame[y1:y2, x1:x2]
+                    plate_path = f"violations/plates/plate_{tid}_frame_{frame_count}.png"
+                    cv2.imwrite(plate_path, plate_crop)
 
-            # You can save metadata to a JSON or database as needed here
-            violation_record = {
-                "track_id": v["track_id"],
-                "frame_time": v["frame_time"],
-                "rider_img_path": rider_path,
-                "plate_img_path": plate_path
-            }
-            print("Violation recorded:", violation_record)
+                    # track best plate (largest area = clearest)
+                    area = (x2 - x1) * (y2 - y1)
+                    if area > best_plate["area"]:
+                        best_plate = {"area": area, "path": plate_path}
 
-        # Optionally save violation_record to persistent storage
-        print("Violations", violations)
+                rider_crop = frame[info["rider_bbox"][1]:info["rider_bbox"][3],
+                                   info["rider_bbox"][0]:info["rider_bbox"][2]]
+                rider_path = f"violations/riders/rider_{tid}_frame_{frame_count}.png"
+                cv2.imwrite(rider_path, rider_crop)
+
+                violation_record = {
+                    "track_id": tid,
+                    "frame_time": cap.get(cv2.CAP_PROP_POS_MSEC),
+                    "rider_img_path": rider_path,
+                    "plate_img_path": plate_path
+                }
+                violations.append(violation_record)
+                print("Violation recorded:", violation_record)
+
+        with open("output_log.txt", "a") as f:
+            for v in violations:
+                f.write(json.dumps(v) + "\n")
+
         out.write(frame)
 
-    # Release resources
     cap.release()
     out.release()
     print(f"Tracking video saved to: {output_video_path}")
+
+    # --- After video processing, send only the best plate to Gemini ---
+    if best_plate["path"]:
+        print("Sending best plate to Gemini:", best_plate["path"])
+        plate_text = extract_plate_text_with_gemini(best_plate["path"])
+        print("Extracted Plate Text:", plate_text)
+
+        send_notification(plate_text);
+    else:
+        print("No plate detected to send to Gemini.")
 
 if __name__ == "__main__":
     main()
