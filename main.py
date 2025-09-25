@@ -9,12 +9,15 @@ import json
 from google import genai
 from PIL import Image
 from notify import send_notification
-
+from dotenv import load_dotenv
 MODEL_PATH = './models/best.pt'
 VIDEO_PATH = './assets/test2.mp4'
 
+
+load_dotenv()
+google_api_key = os.getenv("GOOGLE_API_KEY")
 # Initialize Gemini client once
-client = genai.Client(api_key="AIzaSyBuGk3kE8zdnFyhFwn8h8iEWF8YTXFUapA")
+client = genai.Client(api_key=google_api_key)
 
 def extract_plate_text_with_gemini(image_path: str):
     """Send one number plate image to Gemini and return extracted text."""
