@@ -7,7 +7,7 @@ def extract_number_plate(image_path: str, prompt: str = "Extract the license pla
 
     img = Image.open(image_path)
     response = client.models.generate_content(
-        model="gemini-1.5-flash",
+        model="gemini-2.5-flash",
         contents=[img, prompt]
     )
 

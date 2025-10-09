@@ -24,7 +24,7 @@ def extract_plate_text_with_gemini(image_path: str):
     try:
         img = Image.open(image_path)
         response = client.models.generate_content(
-            model="gemini-1.5-flash",   # use a multimodal model
+            model="gemini-2.0-flash", 
             contents=[
                 img,
                 "Extract the license plate number from this image. Return strictly the plate text. Do not include spaces, symbols, or additional text."
