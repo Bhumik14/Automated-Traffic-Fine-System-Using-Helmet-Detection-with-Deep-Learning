@@ -56,6 +56,19 @@ def main():
     os.makedirs("violations/plates", exist_ok=True)
 
     best_plate = {"area": 0, "path": None}  # store best crop for Gemini
+    edge_margin = 5
+
+    def box_area(box):
+        x1, y1, x2, y2 = box
+        return max(0, x2 - x1) * max(0, y2 - y1)
+
+    def is_edge_rider(rider_box):
+        x1, y1, x2, y2 = rider_box
+        if x1 <= edge_margin or y1 <= edge_margin:
+            return True
+        if x2 >= frame_width - edge_margin or y2 >= frame_height - edge_margin:
+            return True
+        return False
 
     while cap.isOpened():
         success, frame = cap.read()
@@ -80,6 +93,7 @@ def main():
                     "no_helmet_bbox": None,
                     "number_plate_bbox": None,
                     "rider_bbox": bounding_box,
+                    "edge_rider": is_edge_rider(bounding_box),
                 }
                 rider_boxes[tracking_id] = bounding_box
         
@@ -89,6 +103,13 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
         # Associate helmet/no_helmet/number_plate
+        rider_best = {}
+        for rider_id in rider_boxes.keys():
+            rider_best[rider_id] = {
+                "helmet": {"iou": 0.0, "area": 0, "box": None},
+                "no_helmet": {"iou": 0.0, "area": 0, "box": None},
+            }
+
         for obj_tracking_id, obj_box, obj_label in zip(tracking_ids, boxes, cls_labels):
             obj_box = list(map(int, obj_box))
             if obj_label not in ["helmet", "no_helmet", "number_plate"]:
@@ -102,21 +123,35 @@ def main():
                     best_iou = overlap
                     best_rider_id = rider_id
 
-            if best_rider_id is not None:
-                if obj_label == "helmet":
-                    track_info[best_rider_id]["helmet"] = True
-                    track_info[best_rider_id]["helmet_bbox"] = obj_box
-                elif obj_label == "no_helmet":
-                    track_info[best_rider_id]["no_helmet"] = True
-                    track_info[best_rider_id]["no_helmet_bbox"] = obj_box
-                elif obj_label == "number_plate":
-                    track_info[best_rider_id]["number_plate"] = True
-                    track_info[best_rider_id]["number_plate_bbox"] = obj_box
+                if obj_label in ["helmet", "no_helmet"]:
+                    if track_info[rider_id]["edge_rider"]:
+                        continue
+                    if overlap > 0.01:
+                        candidate_area = box_area(obj_box)
+                        current = rider_best[rider_id][obj_label]
+                        if overlap > current["iou"] or (overlap == current["iou"] and candidate_area > current["area"]):
+                            rider_best[rider_id][obj_label] = {"iou": overlap, "area": candidate_area, "box": obj_box}
+
+            if best_rider_id is not None and obj_label == "number_plate":
+                track_info[best_rider_id]["number_plate"] = True
+                track_info[best_rider_id]["number_plate_bbox"] = obj_box
+
+        for rider_id, best in rider_best.items():
+            if track_info[rider_id]["edge_rider"]:
+                continue
+            if best["helmet"]["box"] is not None:
+                track_info[rider_id]["helmet"] = True
+                track_info[rider_id]["helmet_bbox"] = best["helmet"]["box"]
+            if best["no_helmet"]["box"] is not None:
+                track_info[rider_id]["no_helmet"] = True
+                track_info[rider_id]["no_helmet_bbox"] = best["no_helmet"]["box"]
 
         violations = []
         frame_count = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
 
         for tid, info in track_info.items():
+            if info.get("edge_rider"):
+                continue
             if info["rider"] and info["no_helmet"]:
                 np_box = info["number_plate_bbox"]
                 plate_path = None
